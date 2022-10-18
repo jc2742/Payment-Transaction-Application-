@@ -1,0 +1,137 @@
+import json
+
+import db
+from flask import Flask
+from flask import request
+
+DB = db.DatabaseDriver()
+
+app = Flask(__name__)
+
+
+def success_response(body, code=200):
+    """
+    Returns a generalized sucessful response code
+    """
+    return json.dumps(body), code
+
+def failure_response(message, code=404):
+    """
+    Returns a generalized unsucessful response code
+    """
+    return json.dumps({"error": message}), code
+
+def check_bal(sender_id, amount):
+    """
+    Returns true if sender has enough money, else false
+    """
+    user = DB.get_user_by_id(sender_id)
+    return user["balance"] >= amount 
+    
+
+
+@app.route("/")
+def hello_world():
+    """
+    End point for Hello World
+    """
+    return "Hello world!"
+
+@app.route("/api/users/")
+def get_users():
+    """
+    End point for returning all users
+    """
+    return success_response({"users":DB.get_all_users()})
+
+@app.route("/api/users/", methods=["POST"])
+def create_user():
+    """
+    Endpoint for creating a user
+    """
+    body = json.loads(request.data)
+    name = body.get("name")
+    username = body.get("username")
+    balance = body.get("balance", 0)
+    if name is None or username is None:
+        return failure_response("You are missing a username or name!", 400)
+    user_id =  DB.insert_user(name, username, balance)
+    user = DB.get_user_by_id(user_id)
+    if user is None:
+        return json.dumps({"error":"Something went wrong when creating a user"}), 404
+    user["transactions"] = DB.get_transaction_of_user(user_id)
+    return success_response(user, 201)
+
+@app.route("/api/users/<int:id>/")
+def get_user_by_id(id):
+    """
+    Endpoint for getting a user by id
+    """
+    user = DB.get_user_by_id(id)
+    if user is None:
+        return failure_response("User not found!")
+    user["transactions"] = DB.get_transaction_of_user(id)
+    return success_response(user)
+
+@app.route("/api/users/<int:id>/", methods=["DELETE"])
+def delete_user(id):
+    """
+    Endpoint for deleting a user by id
+    """
+    user = DB.get_user_by_id(id)
+    if user is None:
+        return failure_response("User not found!")
+    user["transactions"] = DB.get_transaction_of_user(id)
+    DB.delete_user_by_id(id)
+    return success_response(user)
+
+@app.route("/api/transactions/", methods=["POST"])
+def create_transaction():
+    """
+    Endpoint for creating a transaction
+    """
+    body = json.loads(request.data)
+    sender_id = body.get("sender_id")
+    receiver_id = body.get("receiver_id")
+    amount = body.get("amount")
+    message = body.get("message")
+    accepted = body.get("accepted")
+    if sender_id is None or receiver_id is None or amount is None or message is None:
+        return failure_response("Missing sender_id, receiver_id, amount, or message!"), 400
+    if accepted:
+        if check_bal(sender_id, amount):
+            DB.make_transfer(sender_id, receiver_id, amount)
+        else:
+            return json.dumps({"error": "Not enough Money!"}), 403
+    transaction_id = DB.insert_transaction(sender_id, receiver_id, amount, message, accepted)
+    return success_response(DB.get_transaction_by_id(transaction_id),201)
+
+@app.route("/api/transactions/<int:id>/", methods=["POST"])
+def update_transaction(id):
+    """
+    Endpoint for updating the accepted value of a transaction by id
+    """
+    body = json.loads(request.data)
+    transaction = DB.get_transaction_by_id(id)
+    if transaction is None:
+        return failure_response("Could not find transaction")
+    if transaction["accepted"] == True or transaction["accepted"] == False:
+        return failure_response("Cannot change transactions accepted!", 403)
+    sender_id = transaction["sender_id"]
+    receiver_id = transaction["receiver_id"]
+    amount = transaction["amount"]
+    accepted = body.get("accepted")
+    if accepted:
+        if check_bal(sender_id, amount):
+            DB.update_transaction(id, True)
+            DB.make_transfer(sender_id, receiver_id, amount)
+        else:
+            DB.update_transaction(id, False)
+            return failure_response("Not enough money", 403)
+    else:
+        DB.update_transaction(id, False)
+    return success_response(DB.get_transaction_by_id(id))
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=True)
